@@ -1839,4 +1839,5 @@ class KawaiiSpotify {
 
 document.addEventListener('DOMContentLoaded', () => {
   window.spotify = new KawaiiSpotify();
+  window.kawaiiApp = window.spotify;
 });
