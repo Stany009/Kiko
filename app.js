@@ -411,13 +411,24 @@ class KawaiiSpotify {
       fileUpload.addEventListener('change', (e) => this.handleLocalFiles(e.target.files));
     }
 
-    // HTML5 Audio events for local files
+    // HTML5 Audio events for native streams & local files
     this.htmlAudio.addEventListener('ended', () => this.onTrackEnded());
+    this.htmlAudio.addEventListener('play', () => {
+      this.isPlaying = true;
+      this.updatePlayStateUI();
+    });
+    this.htmlAudio.addEventListener('pause', () => {
+      const cur = this.getCurrentTrack();
+      if (cur && cur.type !== 'youtube') {
+        this.isPlaying = false;
+        this.updatePlayStateUI();
+      }
+    });
     this.htmlAudio.addEventListener('timeupdate', () => {
       const cur = this.getCurrentTrack();
       if (cur && cur.type !== 'youtube') {
         const current = this.htmlAudio.currentTime;
-        const total = this.htmlAudio.duration || 1;
+        const total = this.htmlAudio.duration || cur.durationSec || 1;
         this.updateScrubberUI(current, total);
       }
     });
@@ -794,6 +805,11 @@ class KawaiiSpotify {
   }
 
   initMediaSession() {
+    if (navigator.audioSession) {
+      try {
+        navigator.audioSession.type = 'playback';
+      } catch (_) {}
+    }
     if (!('mediaSession' in navigator)) return;
     try {
       navigator.mediaSession.setActionHandler('play', () => this.play());

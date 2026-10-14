@@ -1,9 +1,70 @@
+import CryptoJS from 'crypto-js';
+
 const TRENDING_QUERIES = [
-  'top global hits billboard 2026',
-  'trending pop music 2026',
-  'lofi hip hop radio beats',
+  'top global hits billboard',
+  'trending pop music',
+  'chill lofi beats',
   'electronic dance hits'
 ];
+
+function decryptMediaUrl(encrypted) {
+  if (!encrypted) return null;
+  try {
+    const key = CryptoJS.enc.Utf8.parse('38346591');
+    const ciphertext = CryptoJS.enc.Base64.parse(encrypted);
+    const decrypted = CryptoJS.DES.decrypt({ ciphertext }, key, {
+      mode: CryptoJS.mode.ECB,
+      padding: CryptoJS.pad.Pkcs7
+    });
+    return decrypted.toString(CryptoJS.enc.Utf8).replace(/\0/g, '').trim();
+  } catch {
+    return null;
+  }
+}
+
+function cleanHtml(str) {
+  if (!str) return '';
+  return str.replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+}
+
+async function searchSaavn(query) {
+  try {
+    const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=1&n=12&q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+    const data = await res.json();
+    if (!data.results || !data.results.length) return [];
+
+    const tracks = [];
+    for (const s of data.results) {
+      if (!s.encrypted_media_url) continue;
+      const directUrl = decryptMediaUrl(s.encrypted_media_url);
+      if (!directUrl) continue;
+
+      const hqUrl = directUrl.replace(/_96\.mp4|_160\.mp4/, '_320.mp4');
+      const durationSec = parseInt(s.duration, 10) || 210;
+      const mins = Math.floor(durationSec / 60);
+      const secs = durationSec % 60;
+      const durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      const cover = (s.image || '').replace(/150x150\.jpg|50x50\.jpg/, '500x500.jpg');
+
+      tracks.push({
+        id: `saavn-${s.id}`,
+        title: cleanHtml(s.song || 'Unknown Song'),
+        artist: cleanHtml(s.primary_artists || 'Unknown Artist'),
+        album: cleanHtml(s.album || 'Single'),
+        duration: durationStr,
+        durationSec: durationSec,
+        cover: cover,
+        src: hqUrl,
+        type: 'audio' // Direct native HTML5 audio stream for uninterrupted iOS background play!
+      });
+    }
+    return tracks;
+  } catch (err) {
+    console.error('Saavn trending error:', err.message);
+    return [];
+  }
+}
 
 async function searchYouTube(query) {
   const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' audio')}`;
@@ -56,6 +117,12 @@ async function searchYouTube(query) {
   }
 }
 
+async function getCategoryTracks(query) {
+  const saavnTracks = await searchSaavn(query);
+  if (saavnTracks && saavnTracks.length > 0) return saavnTracks;
+  return searchYouTube(query);
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -65,7 +132,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const results = await Promise.all(TRENDING_QUERIES.map(q => searchYouTube(q)));
+  const results = await Promise.all(TRENDING_QUERIES.map(q => getCategoryTracks(q)));
   res.status(200).json({
     hits: results[0] || [],
     pop: results[1] || [],

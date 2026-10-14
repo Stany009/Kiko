@@ -1,4 +1,65 @@
+import CryptoJS from 'crypto-js';
+
 const cache = new Map();
+
+function decryptMediaUrl(encrypted) {
+  if (!encrypted) return null;
+  try {
+    const key = CryptoJS.enc.Utf8.parse('38346591');
+    const ciphertext = CryptoJS.enc.Base64.parse(encrypted);
+    const decrypted = CryptoJS.DES.decrypt({ ciphertext }, key, {
+      mode: CryptoJS.mode.ECB,
+      padding: CryptoJS.pad.Pkcs7
+    });
+    return decrypted.toString(CryptoJS.enc.Utf8).replace(/\0/g, '').trim();
+  } catch {
+    return null;
+  }
+}
+
+function cleanHtml(str) {
+  if (!str) return '';
+  return str.replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+}
+
+async function searchSaavn(query) {
+  try {
+    const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=1&n=20&q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+    const data = await res.json();
+    if (!data.results || !data.results.length) return [];
+
+    const tracks = [];
+    for (const s of data.results) {
+      if (!s.encrypted_media_url) continue;
+      const directUrl = decryptMediaUrl(s.encrypted_media_url);
+      if (!directUrl) continue;
+
+      const hqUrl = directUrl.replace(/_96\.mp4|_160\.mp4/, '_320.mp4');
+      const durationSec = parseInt(s.duration, 10) || 210;
+      const mins = Math.floor(durationSec / 60);
+      const secs = durationSec % 60;
+      const durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      const cover = (s.image || '').replace(/150x150\.jpg|50x50\.jpg/, '500x500.jpg');
+
+      tracks.push({
+        id: `saavn-${s.id}`,
+        title: cleanHtml(s.song || 'Unknown Song'),
+        artist: cleanHtml(s.primary_artists || 'Unknown Artist'),
+        album: cleanHtml(s.album || 'Single'),
+        duration: durationStr,
+        durationSec: durationSec,
+        cover: cover,
+        src: hqUrl,
+        type: 'audio' // Direct native HTML5 audio stream for uninterrupted iOS background play!
+      });
+    }
+    return tracks;
+  } catch (err) {
+    console.error('Saavn search error:', err.message);
+    return [];
+  }
+}
 
 async function searchYouTube(query) {
   const cacheKey = query.toLowerCase().trim();
@@ -92,6 +153,14 @@ export default async function handler(req, res) {
     return;
   }
 
+  // 1. Try high-quality direct audio search first (enables continuous iOS background play)
+  const saavnTracks = await searchSaavn(q);
+  if (saavnTracks && saavnTracks.length > 0) {
+    res.status(200).json({ tracks: saavnTracks });
+    return;
+  }
+
+  // 2. Fall back to YouTube search if no direct audio streams matched
   const tracks = await searchYouTube(q);
   res.status(200).json({ tracks });
 }

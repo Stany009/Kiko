@@ -2,9 +2,11 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import CryptoJS from 'crypto-js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 // Load environment variables if .env exists
 if (fs.existsSync(path.join(__dirname, '.env'))) {
   try {
@@ -33,7 +35,65 @@ if (fs.existsSync(path.join(__dirname, '.env'))) {
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-// In-memory cache for search queries
+function decryptMediaUrl(encrypted) {
+  if (!encrypted) return null;
+  try {
+    const key = CryptoJS.enc.Utf8.parse('38346591');
+    const ciphertext = CryptoJS.enc.Base64.parse(encrypted);
+    const decrypted = CryptoJS.DES.decrypt({ ciphertext }, key, {
+      mode: CryptoJS.mode.ECB,
+      padding: CryptoJS.pad.Pkcs7
+    });
+    return decrypted.toString(CryptoJS.enc.Utf8).replace(/\0/g, '').trim();
+  } catch {
+    return null;
+  }
+}
+
+function cleanHtml(str) {
+  if (!str) return '';
+  return str.replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+}
+
+async function searchSaavn(query) {
+  try {
+    const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=1&n=20&q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+    const data = await res.json();
+    if (!data.results || !data.results.length) return [];
+
+    const tracks = [];
+    for (const s of data.results) {
+      if (!s.encrypted_media_url) continue;
+      const directUrl = decryptMediaUrl(s.encrypted_media_url);
+      if (!directUrl) continue;
+
+      const hqUrl = directUrl.replace(/_96\.mp4|_160\.mp4/, '_320.mp4');
+      const durationSec = parseInt(s.duration, 10) || 210;
+      const mins = Math.floor(durationSec / 60);
+      const secs = durationSec % 60;
+      const durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      const cover = (s.image || '').replace(/150x150\.jpg|50x50\.jpg/, '500x500.jpg');
+
+      tracks.push({
+        id: `saavn-${s.id}`,
+        title: cleanHtml(s.song || 'Unknown Song'),
+        artist: cleanHtml(s.primary_artists || 'Unknown Artist'),
+        album: cleanHtml(s.album || 'Single'),
+        duration: durationStr,
+        durationSec: durationSec,
+        cover: cover,
+        src: hqUrl,
+        type: 'audio' // Direct native HTML5 audio stream for uninterrupted iOS background play!
+      });
+    }
+    return tracks;
+  } catch (err) {
+    console.error('Saavn search error:', err.message);
+    return [];
+  }
+}
+
 const cache = new Map();
 
 async function searchYouTube(query) {
@@ -62,12 +122,10 @@ async function searchYouTube(query) {
       const v = item.videoRenderer;
       if (v && v.videoId && v.title?.runs?.[0]?.text) {
         const titleText = v.title.runs.map(r => r.text).join('');
-        // Clean title
         const cleanTitle = titleText.replace(/(\(Official.*?\)|\[Official.*?\]|\(Lyric.*?\)|\[Lyric.*?\]|\(Audio\)|\[Audio\])/gi, '').trim();
         const artist = v.ownerText?.runs?.[0]?.text || 'Unknown Artist';
         const durationStr = v.lengthText?.simpleText || '3:30';
 
-        // Parse duration seconds
         const parts = durationStr.split(':').map(Number);
         const durationSec = parts.length === 2 ? parts[0] * 60 + parts[1] : (parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : 210);
 
@@ -96,16 +154,19 @@ async function searchYouTube(query) {
   }
 }
 
-// Global trending playlists seeds
 const TRENDING_QUERIES = [
-  'top global hits billboard 2026',
-  'trending pop music 2026',
-  'lofi hip hop radio beats',
+  'top global hits billboard',
+  'trending pop music',
+  'chill lofi beats',
   'electronic dance hits'
 ];
 
 async function getTrending() {
-  const results = await Promise.all(TRENDING_QUERIES.map(q => searchYouTube(q)));
+  const results = await Promise.all(TRENDING_QUERIES.map(async (q) => {
+    const saavnTracks = await searchSaavn(q);
+    if (saavnTracks && saavnTracks.length > 0) return saavnTracks;
+    return searchYouTube(q);
+  }));
   return {
     hits: results[0] || [],
     pop: results[1] || [],
@@ -149,7 +210,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Check if it's a direct YouTube URL
+    // Direct YouTube link match
     const ytUrlMatch = q.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
     if (ytUrlMatch) {
       const vid = ytUrlMatch[1];
@@ -169,6 +230,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const saavnTracks = await searchSaavn(q);
+    if (saavnTracks && saavnTracks.length > 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ tracks: saavnTracks }));
+      return;
+    }
+
     const tracks = await searchYouTube(q);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ tracks }));
@@ -183,12 +251,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // API: Public Config for Client (Supabase)
+  // API: Public Config for Supabase
   if (pathname === '/api/config') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      supabaseUrl: process.env.SUPABASE_URL || '',
-      supabaseAnonKey: process.env.SUPABASE_ANON_KEY || ''
+      supabaseUrl: process.env.SUPABASE_URL || 'https://lbyvueqbjqkilmamlqml.supabase.co',
+      supabaseAnonKey: process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxieXZ1ZXFianFraWxtYW1scW1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA0NDMzODIsImV4cCI6MjA3NjAxOTM4Mn0.L1r-sXzN9w_xP721-iQz7fK8eM4k8v6d9n3q2b1y5w0'
     }));
     return;
   }
@@ -196,24 +264,25 @@ const server = http.createServer(async (req, res) => {
   // Static File Serving
   let filePath = path.join(__dirname, pathname === '/' ? 'index.html' : pathname);
   const ext = path.extname(filePath).toLowerCase();
-  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  // If file doesn't exist, serve index.html (SPA fallback)
+  if (!fs.existsSync(filePath)) {
+    filePath = path.join(__dirname, 'index.html');
+  }
+
+  const contentType = MIME_TYPES[ext] || 'text/html';
 
   fs.readFile(filePath, (err, content) => {
     if (err) {
-      if (err.code === 'ENOENT') {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('404 Not Found');
-      } else {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('500 Server Error');
-      }
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Server Error');
     } else {
       res.writeHead(200, { 'Content-Type': contentType });
-      res.end(content);
+      res.end(content, 'utf-8');
     }
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`Kiko ♡ Kawaii Music Platform running at http://localhost:${PORT}`);
+  console.log(`Kiko server is running on http://localhost:${PORT}`);
 });
