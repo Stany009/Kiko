@@ -207,9 +207,13 @@ class KawaiiSpotify {
               this.updatePlayStateUI();
               this.startTicker();
             } else if (event.data === 2) {
-              this.isPlaying = false;
-              this.updatePlayStateUI();
-              this.stopTicker();
+              // If document is hidden (user on home screen or locked phone),
+              // preserve playing state so MediaSession lockscreen controls remain active
+              if (!document.hidden) {
+                this.isPlaying = false;
+                this.updatePlayStateUI();
+                this.stopTicker();
+              }
             }
           }
         }
@@ -346,12 +350,13 @@ class KawaiiSpotify {
         return;
       }
 
-      if (this.searchDropdown) {
-        this.searchDropdown.classList.add('active');
-        this.searchDropdown.innerHTML = `<div class="search-drop-loading">Searching songs for "${query}"... ♡</div>`;
-      }
-
-      debounceTimer = setTimeout(() => this.executeSearch(query), 300);
+      debounceTimer = setTimeout(() => {
+        if (this.searchDropdown) {
+          this.searchDropdown.classList.add('active');
+          this.searchDropdown.innerHTML = `<div class="search-drop-loading">Searching songs for "${query}"... ♡</div>`;
+        }
+        this.executeSearch(query);
+      }, 350);
     });
 
     this.searchInput.addEventListener('focus', () => {
@@ -539,9 +544,16 @@ class KawaiiSpotify {
       `;
 
       item.addEventListener('click', () => {
+        if (this.searchInput) this.searchInput.blur();
         this.setTrack(idx, true, tracks);
         this.searchDropdown.classList.remove('active');
         this.searchInput.value = track.title;
+
+        // Smoothly scroll to player card on mobile so user sees the track immediately
+        const playerCard = document.querySelector('.kawaii-spotify-card');
+        if (playerCard && window.innerWidth <= 768) {
+          playerCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       });
 
       this.searchDropdown.appendChild(item);
