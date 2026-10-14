@@ -2,6 +2,9 @@
 // Inspired by Pastel Coquette / Aesthetic Widgets & Retro Cards
 // Ad-Free, Dual Engine (YouTube Streaming + HTML5 Audio), Universal Music Search
 
+// Inaudible silent audio loop used to maintain mobile OS background audio sessions
+const SILENT_AUDIO_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
 class KawaiiSpotify {
   constructor() {
     this.htmlAudio = document.getElementById('audio-engine');
@@ -46,6 +49,7 @@ class KawaiiSpotify {
     this.initDOM();
     this.initThemes();
     this.initEventListeners();
+    this.initMediaSession();
     this.initAuthAndPlaylistModals();
     this.initYouTubeAPI();
     this.loadInitialCatalog();
@@ -427,6 +431,28 @@ class KawaiiSpotify {
         this.btnMute.click();
       }
     });
+
+    // Background playback & mobile visibility management
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (this.isPlaying) {
+          if (this.htmlAudio && this.htmlAudio.paused && this.htmlAudio.src === SILENT_AUDIO_WAV) {
+            this.htmlAudio.play().catch(() => {});
+          }
+          if (this.ytPlayer && this.isYtReady && typeof this.ytPlayer.playVideo === 'function') {
+            setTimeout(() => {
+              if (this.isPlaying) {
+                try { this.ytPlayer.playVideo(); } catch (_) {}
+              }
+            }, 100);
+          }
+        }
+      } else {
+        if (this.isPlaying && this.ytPlayer && this.isYtReady && typeof this.ytPlayer.playVideo === 'function') {
+          try { this.ytPlayer.playVideo(); } catch (_) {}
+        }
+      }
+    });
   }
 
   switchTab(tabId) {
@@ -608,10 +634,19 @@ class KawaiiSpotify {
     if (this.miniHeart) this.miniHeart.textContent = isLiked ? '♥' : '♡';
 
     this.updateActiveGridItems();
+    this.updateMediaSession(track);
 
     // Audio stream dispatch
     if (track.type === 'youtube') {
-      this.htmlAudio.pause();
+      if (this.htmlAudio) {
+        if (this.htmlAudio.src !== SILENT_AUDIO_WAV) {
+          this.htmlAudio.src = SILENT_AUDIO_WAV;
+          this.htmlAudio.loop = true;
+        }
+        if (autoPlay) {
+          this.htmlAudio.play().catch(() => {});
+        }
+      }
       if (this.ytPlayer && this.isYtReady) {
         if (autoPlay) {
           this.ytPlayer.loadVideoById(track.youtubeId);
@@ -626,12 +661,13 @@ class KawaiiSpotify {
       if (this.ytPlayer && this.isYtReady) {
         this.ytPlayer.pauseVideo();
       }
+      this.htmlAudio.loop = false;
       this.htmlAudio.src = track.src;
       if (autoPlay) {
         this.htmlAudio.play().then(() => {
           this.isPlaying = true;
           this.updatePlayStateUI();
-        });
+        }).catch(() => {});
       }
     }
   }
@@ -645,8 +681,15 @@ class KawaiiSpotify {
     if (!cur) return;
     if (cur.type === 'youtube' && this.ytPlayer && this.isYtReady) {
       this.ytPlayer.playVideo();
+      if (this.htmlAudio) {
+        if (this.htmlAudio.src !== SILENT_AUDIO_WAV) {
+          this.htmlAudio.src = SILENT_AUDIO_WAV;
+          this.htmlAudio.loop = true;
+        }
+        this.htmlAudio.play().catch(() => {});
+      }
     } else {
-      this.htmlAudio.play();
+      this.htmlAudio.play().catch(() => {});
     }
     this.isPlaying = true;
     this.updatePlayStateUI();
@@ -656,6 +699,9 @@ class KawaiiSpotify {
     const cur = this.getCurrentTrack();
     if (cur && cur.type === 'youtube' && this.ytPlayer && this.isYtReady) {
       this.ytPlayer.pauseVideo();
+      if (this.htmlAudio && this.htmlAudio.src === SILENT_AUDIO_WAV) {
+        this.htmlAudio.pause();
+      }
     } else {
       this.htmlAudio.pause();
     }
@@ -704,6 +750,9 @@ class KawaiiSpotify {
 
   updatePlayStateUI() {
     document.body.classList.toggle('is-playing', this.isPlaying);
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
+    }
 
     if (this.isPlaying) {
       this.playIcon.innerHTML = `<path d="M5.7 3a.7.7 0 0 0-.7.7v16.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V3.7a.7.7 0 0 0-.7-.7H5.7zm10 0a.7.7 0 0 0-.7.7v16.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V3.7a.7.7 0 0 0-.7-.7h-2.6z"/>`;
@@ -740,6 +789,46 @@ class KawaiiSpotify {
   prevTrack() {
     const prev = (this.currentTrackIndex - 1 + this.activePlaylist.length) % this.activePlaylist.length;
     this.setTrack(prev, true);
+  }
+
+  initMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.setActionHandler('play', () => this.play());
+      navigator.mediaSession.setActionHandler('pause', () => this.pause());
+      navigator.mediaSession.setActionHandler('previoustrack', () => this.prevTrack());
+      navigator.mediaSession.setActionHandler('nexttrack', () => this.nextTrack());
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        const cur = this.getCurrentTrack();
+        if (!cur) return;
+        if (details.seekTime != null) {
+          if (cur.type === 'youtube' && this.ytPlayer && this.isYtReady) {
+            this.ytPlayer.seekTo(details.seekTime, true);
+          } else if (this.htmlAudio) {
+            this.htmlAudio.currentTime = details.seekTime;
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('MediaSession init notice:', e);
+    }
+  }
+
+  updateMediaSession(track) {
+    if (!('mediaSession' in navigator) || !track) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title || 'Kiko Music',
+        artist: track.artist || 'Unknown Artist',
+        album: 'Kiko Player',
+        artwork: [
+          { src: track.cover || '', sizes: '512x512', type: 'image/jpeg' }
+        ]
+      });
+      navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
+    } catch (e) {
+      console.warn('MediaSession update notice:', e);
+    }
   }
 
   toggleShuffle() {
