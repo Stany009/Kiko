@@ -187,7 +187,7 @@ class KawaiiSpotify {
           autoplay: 0,
           controls: 0,
           disablekb: 1,
-          fs: 0,
+          fs: 1,
           rel: 0,
           modestbranding: 1,
           playsinline: 1,
@@ -437,24 +437,14 @@ class KawaiiSpotify {
       }
     });
 
-    // Background playback & mobile visibility management
+    // Mobile visibility management: auto-resume when returning to the foreground tab
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        if (this.isPlaying) {
-          if (this.htmlAudio && this.htmlAudio.paused && this.htmlAudio.src === SILENT_AUDIO_WAV) {
-            this.htmlAudio.play().catch(() => {});
-          }
-          if (this.ytPlayer && this.isYtReady && typeof this.ytPlayer.playVideo === 'function') {
-            setTimeout(() => {
-              if (this.isPlaying) {
-                try { this.ytPlayer.playVideo(); } catch (_) {}
-              }
-            }, 100);
-          }
-        }
-      } else {
-        if (this.isPlaying && this.ytPlayer && this.isYtReady && typeof this.ytPlayer.playVideo === 'function') {
+      if (!document.hidden && this.isPlaying) {
+        const cur = this.getCurrentTrack();
+        if (cur && cur.type === 'youtube' && this.ytPlayer && this.isYtReady && typeof this.ytPlayer.playVideo === 'function') {
           try { this.ytPlayer.playVideo(); } catch (_) {}
+        } else if (this.htmlAudio && this.htmlAudio.paused) {
+          this.htmlAudio.play().catch(() => {});
         }
       }
     });
