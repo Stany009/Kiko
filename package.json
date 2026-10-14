@@ -1,0 +1,10 @@
+{
+  "name": "kiko",
+  "version": "1.0.0",
+  "description": "Kiko - Kawaii Web Music Player",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
