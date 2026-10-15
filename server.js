@@ -283,6 +283,15 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Kiko server is running on http://localhost:${PORT}`);
-});
+export default function handler(req, res) {
+  return new Promise((resolve) => {
+    server.emit('request', req, res);
+    res.on('finish', resolve);
+  });
+}
+
+if (!process.env.VERCEL) {
+  server.listen(PORT, () => {
+    console.log(`Kiko server is running on http://localhost:${PORT}`);
+  });
+}
