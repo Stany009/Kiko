@@ -3012,3 +3012,95 @@ body.is-playing .barcode-waveform-bars .bar {
   }
 }
 
+/* iOS Background Audio Badge and Search Filter Styling */
+.search-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 4px 2px;
+  flex-wrap: wrap;
+}
+
+.filter-hint {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.filter-pill {
+  border: 1.5px solid var(--card-border);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--text-main);
+  transition: all 0.2s ease;
+}
+
+.filter-pill:hover {
+  background: #FFF;
+  border-color: var(--accent-pink-dark);
+}
+
+.filter-pill.active {
+  background: var(--accent-pink);
+  border-color: var(--accent-pink-dark);
+  color: #3E2F28;
+}
+
+.song-item-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.tag-bg-ready {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #E8F5E9;
+  color: #2E7D32;
+  border: 1px solid #C8E6C9;
+}
+
+.tag-yt-video {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #FFF3E0;
+  color: #E65100;
+  border: 1px solid #FFE0B2;
+}
+
+.search-drop-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.search-drop-badge.bg-ready {
+  background: #E8F5E9;
+  color: #2E7D32;
+  border: 1px solid #C8E6C9;
+}
+
+.search-drop-badge.yt-video {
+  background: #FFF3E0;
+  color: #E65100;
+  border: 1px solid #FFE0B2;
+}
+

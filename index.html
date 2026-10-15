@@ -360,6 +360,13 @@
               <button class="create-pl-tab-btn" id="btn-open-create-playlist" title="Create Playlist">+ New Playlist ♡</button>
             </div>
 
+            <!-- Optional Sub-Filter Pills (e.g. for iOS background audio) -->
+            <div class="search-filter-row" id="search-filter-row" style="display:none;">
+              <span class="filter-hint">📱 iOS Audio:</span>
+              <button class="filter-pill active" id="filter-all">All Songs</button>
+              <button class="filter-pill" id="filter-bg-audio">🎵 iOS Background Only</button>
+            </div>
+
             <!-- Dynamic 2-Column Song Items List (Image 2 Style) -->
             <div class="two-column-songs-grid" id="two-column-songs-list">
               <!-- Dynamically populated song items -->
@@ -833,8 +840,8 @@
     <div id="playlist-tracks-list"></div>
   </div>
 
-  <!-- HTML5 Audio Fallback Engine -->
-  <audio id="audio-engine" preload="auto"></audio>
+  <!-- HTML5 Audio Engine for iOS Background Playback -->
+  <audio id="audio-engine" preload="auto" playsinline webkit-playsinline></audio>
 
   <!-- Main Application Script -->
   <script src="app.js"></script>

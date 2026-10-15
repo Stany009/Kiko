@@ -29,6 +29,7 @@ class KawaiiSpotify {
       search: []
     };
     this.currentTab = 'trending';
+    this.activeSearchFilter = 'all';
 
     // User data
     this.likedTrackIds = new Set(JSON.parse(localStorage.getItem('spotify_liked_tracks') || '[]'));
@@ -111,6 +112,9 @@ class KawaiiSpotify {
     this.tabLiked = document.getElementById('tab-liked');
     this.tabPlaylists = document.getElementById('tab-playlists');
     this.tabSearch = document.getElementById('tab-search');
+    this.searchFilterRow = document.getElementById('search-filter-row');
+    this.filterAll = document.getElementById('filter-all');
+    this.filterBgAudio = document.getElementById('filter-bg-audio');
     this.likedCountBadge = document.getElementById('liked-count-badge');
     this.userPlCount = document.getElementById('user-pl-count');
     this.btnPlayAllCurrent = document.getElementById('btn-play-all-current');
@@ -411,6 +415,12 @@ class KawaiiSpotify {
       fileUpload.addEventListener('change', (e) => this.handleLocalFiles(e.target.files));
     }
 
+    // Search audio type filters (for iOS background audio)
+    if (this.filterAll && this.filterBgAudio) {
+      this.filterAll.addEventListener('click', () => this.setSearchFilter('all'));
+      this.filterBgAudio.addEventListener('click', () => this.setSearchFilter('bg-audio'));
+    }
+
     // HTML5 Audio events for native streams & local files
     this.htmlAudio.addEventListener('ended', () => this.onTrackEnded());
     this.htmlAudio.addEventListener('play', () => {
@@ -430,6 +440,15 @@ class KawaiiSpotify {
         const current = this.htmlAudio.currentTime;
         const total = this.htmlAudio.duration || cur.durationSec || 1;
         this.updateScrubberUI(current, total);
+        if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession && this.htmlAudio.duration) {
+          try {
+            navigator.mediaSession.setPositionState({
+              duration: this.htmlAudio.duration,
+              playbackRate: this.htmlAudio.playbackRate || 1,
+              position: Math.min(this.htmlAudio.currentTime, this.htmlAudio.duration)
+            });
+          } catch (_) {}
+        }
       }
     });
 
@@ -467,6 +486,10 @@ class KawaiiSpotify {
       tab.classList.toggle('active', tab.dataset.tab === tabId);
     });
 
+    if (this.searchFilterRow) {
+      this.searchFilterRow.style.display = (tabId === 'search') ? 'flex' : 'none';
+    }
+
     if (tabId === 'trending') {
       this.renderTwoColumnGrid(this.catalog.trending);
     } else if (tabId === 'pop') {
@@ -479,8 +502,24 @@ class KawaiiSpotify {
     } else if (tabId === 'playlists') {
       this.renderPlaylistsGrid();
     } else if (tabId === 'search') {
-      this.renderTwoColumnGrid(this.catalog.search);
+      let tracks = this.catalog.search;
+      if (this.activeSearchFilter === 'bg-audio') {
+        tracks = tracks.filter(t => t.type === 'audio' || t.type === 'local');
+      }
+      this.renderTwoColumnGrid(tracks);
     }
+  }
+
+  setSearchFilter(filterMode) {
+    this.activeSearchFilter = filterMode;
+    if (this.filterAll) this.filterAll.classList.toggle('active', filterMode === 'all');
+    if (this.filterBgAudio) this.filterBgAudio.classList.toggle('active', filterMode === 'bg-audio');
+
+    let tracks = this.catalog.search || [];
+    if (filterMode === 'bg-audio') {
+      tracks = tracks.filter(t => t.type === 'audio' || t.type === 'local');
+    }
+    this.renderTwoColumnGrid(tracks);
   }
 
   async executeSearch(query) {
@@ -533,13 +572,18 @@ class KawaiiSpotify {
     }
 
     tracks.slice(0, 6).forEach((track, idx) => {
+      const isAudio = track.type === 'audio' || track.type === 'local';
+      const badgeHtml = isAudio
+        ? '<span class="search-drop-badge bg-ready" title="Plays in background on iOS & lock screen">🎵 iOS Background</span>'
+        : '<span class="search-drop-badge yt-video" title="YouTube video stream">▶ Video</span>';
+
       const item = document.createElement('div');
       item.className = 'search-drop-item';
       item.innerHTML = `
         <img src="${track.cover}" class="search-drop-thumb" alt="${track.title}" loading="lazy">
         <div class="search-drop-info">
           <span class="search-drop-title" title="${track.title}">${track.title}</span>
-          <span class="search-drop-artist" title="${track.artist}">${track.artist} • ${track.duration || '3:30'}</span>
+          <span class="search-drop-artist" title="${track.artist}">${track.artist} • ${track.duration || '3:30'} ${badgeHtml}</span>
         </div>
         <button class="search-drop-play" title="Play Now">▷</button>
       `;
@@ -576,6 +620,10 @@ class KawaiiSpotify {
     tracks.forEach((track, idx) => {
       const isCurrent = cur && cur.id === track.id;
       const isLiked = this.likedTrackIds.has(track.id);
+      const isAudio = track.type === 'audio' || track.type === 'local';
+      const badgeHtml = isAudio
+        ? '<span class="tag-bg-ready" title="Plays in background on iOS & lock screen">🎵 iOS Background</span>'
+        : '<span class="tag-yt-video" title="YouTube video stream">▶ Video</span>';
 
       const item = document.createElement('div');
       item.className = `cute-song-item ${isCurrent ? 'active' : ''}`;
@@ -585,6 +633,7 @@ class KawaiiSpotify {
         <div class="song-item-meta">
           <span class="song-item-label" title="${track.title}"><strong>Song:</strong> ${track.title}</span>
           <span class="artist-item-label" title="${track.artist}"><strong>Artist:</strong> ${track.artist}</span>
+          <div class="song-item-tags">${badgeHtml}</div>
         </div>
         <div class="song-item-actions">
           <button class="song-item-add-pl" title="Add to Playlist">➕</button>
@@ -618,15 +667,17 @@ class KawaiiSpotify {
   }
 
   setTrack(index, autoPlay = true, playlistContext = null) {
-    if (autoPlay && !this.user) {
-      this.openAuthModal();
-      return;
-    }
-
     if (playlistContext) {
       this.activePlaylist = playlistContext;
     }
     if (index < 0 || index >= this.activePlaylist.length) return;
+
+    // Ensure iOS audio session category is set to 'playback' on user interaction
+    if (navigator.audioSession) {
+      try {
+        navigator.audioSession.type = 'playback';
+      } catch (_) {}
+    }
 
     this.currentTrackIndex = index;
     const track = this.activePlaylist[index];
@@ -670,25 +721,30 @@ class KawaiiSpotify {
         }
       }
     } else {
-      // Local audio file
+      // Direct native audio stream (100% background playback compatible on iOS)
       if (this.ytPlayer && this.isYtReady) {
         this.ytPlayer.pauseVideo();
       }
       this.htmlAudio.loop = false;
+      this.htmlAudio.preload = 'auto';
       this.htmlAudio.src = track.src;
+      this.htmlAudio.load();
       if (autoPlay) {
         this.htmlAudio.play().then(() => {
           this.isPlaying = true;
           this.updatePlayStateUI();
-        }).catch(() => {});
+        }).catch((e) => {
+          console.warn('Audio play notice:', e);
+        });
       }
     }
   }
 
   play() {
-    if (!this.user) {
-      this.openAuthModal();
-      return;
+    if (navigator.audioSession) {
+      try {
+        navigator.audioSession.type = 'playback';
+      } catch (_) {}
     }
     const cur = this.getCurrentTrack();
     if (!cur) return;
@@ -723,26 +779,21 @@ class KawaiiSpotify {
   }
 
   togglePlay() {
-    if (!this.user) {
-      this.openAuthModal();
-      return;
-    }
     if (this.isPlaying) this.pause();
     else this.play();
   }
 
   playCurrentTab() {
-    if (!this.user) {
-      this.openAuthModal();
-      return;
-    }
-
     let tracks = [];
     if (this.currentTab === 'trending') tracks = this.catalog.trending;
     else if (this.currentTab === 'pop') tracks = this.catalog.pop;
     else if (this.currentTab === 'chill') tracks = this.catalog.chill;
     else if (this.currentTab === 'liked') tracks = Array.from(this.likedTracksMap.values());
-    else if (this.currentTab === 'search') tracks = this.catalog.search;
+    else if (this.currentTab === 'search') {
+      tracks = this.activeSearchFilter === 'bg-audio'
+        ? this.catalog.search.filter(t => t.type === 'audio' || t.type === 'local')
+        : this.catalog.search;
+    }
     else if (this.currentTab === 'playlists') {
       if (this.customPlaylists.length && this.customPlaylists[0].tracks?.length) {
         tracks = this.customPlaylists[0].tracks;
@@ -838,12 +889,24 @@ class KawaiiSpotify {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: track.title || 'Kiko Music',
         artist: track.artist || 'Unknown Artist',
-        album: 'Kiko Player',
+        album: track.album || 'Kiko Player',
         artwork: [
-          { src: track.cover || '', sizes: '512x512', type: 'image/jpeg' }
+          { src: track.cover || '', sizes: '512x512', type: 'image/jpeg' },
+          { src: track.cover || '', sizes: '256x256', type: 'image/jpeg' },
+          { src: track.cover || '', sizes: '128x128', type: 'image/jpeg' },
+          { src: track.cover || '', sizes: '96x96', type: 'image/jpeg' }
         ]
       });
       navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
+      if ('setPositionState' in navigator.mediaSession && track.durationSec) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: Math.max(1, track.durationSec),
+            playbackRate: 1,
+            position: 0
+          });
+        } catch (_) {}
+      }
     } catch (e) {
       console.warn('MediaSession update notice:', e);
     }
@@ -1127,8 +1190,6 @@ class KawaiiSpotify {
         if (this.authPillHeart) this.authPillHeart.textContent = '♡';
         if (this.authPillText) this.authPillText.textContent = 'Login';
       }
-      this.pause();
-      this.openAuthModal();
     }
   }
 

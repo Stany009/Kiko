@@ -181,8 +181,8 @@ async function searchYouTube(query) {
 }
 
 const TRENDING_QUERIES = [
-  'top global hits billboard',
-  'trending pop music',
+  'top hits english',
+  'trending pop english',
   'chill lofi beats',
   'electronic dance hits'
 ];
