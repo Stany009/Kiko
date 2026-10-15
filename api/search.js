@@ -119,6 +119,32 @@ async function searchYouTube(query) {
   }
 }
 
+function normalize(str) {
+  return (str || '')
+    .toLowerCase()
+    .replace(/[.'"`]/g, '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isRelevant(title, artist, query) {
+  const normQuery = normalize(query);
+  const normText = normalize(`${title} ${artist}`);
+  
+  if (normText.includes(normQuery)) return true;
+  
+  const compactQuery = normQuery.replace(/\s+/g, '');
+  const compactText = normText.replace(/\s+/g, '');
+  if (compactQuery.length >= 2 && compactText.includes(compactQuery)) return true;
+  
+  const qWords = normQuery.split(' ').filter(Boolean);
+  return qWords.every(w => {
+    const regex = new RegExp(`(^|\\s)${w}(\\s|$)`, 'i');
+    return regex.test(normText);
+  });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -153,14 +179,35 @@ export default async function handler(req, res) {
     return;
   }
 
-  // 1. Try high-quality direct audio search first (enables continuous iOS background play)
-  const saavnTracks = await searchSaavn(q);
-  if (saavnTracks && saavnTracks.length > 0) {
-    res.status(200).json({ tracks: saavnTracks });
-    return;
+  // Run both searches in parallel
+  const [saavnRaw, ytRaw] = await Promise.all([
+    searchSaavn(q),
+    searchYouTube(q)
+  ]);
+
+  // Keep genuinely relevant JioSaavn tracks (for 320kbps direct stream)
+  const relevantSaavn = saavnRaw.filter(t => isRelevant(t.title, t.artist, q));
+
+  // Combine and deduplicate
+  const combined = [];
+  const seen = new Set();
+
+  for (const t of relevantSaavn) {
+    const key = `${normalize(t.title)}__${normalize(t.artist)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      combined.push(t);
+    }
   }
 
-  // 2. Fall back to YouTube search if no direct audio streams matched
-  const tracks = await searchYouTube(q);
-  res.status(200).json({ tracks });
+  for (const t of ytRaw) {
+    const key = normalize(t.title);
+    if (!seen.has(key)) {
+      seen.add(key);
+      combined.push(t);
+    }
+  }
+
+  const finalTracks = combined.length > 0 ? combined : ytRaw;
+  res.status(200).json({ tracks: finalTracks });
 }

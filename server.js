@@ -94,6 +94,32 @@ async function searchSaavn(query) {
   }
 }
 
+function normalize(str) {
+  return (str || '')
+    .toLowerCase()
+    .replace(/[.'"`]/g, '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isRelevant(title, artist, query) {
+  const normQuery = normalize(query);
+  const normText = normalize(`${title} ${artist}`);
+  
+  if (normText.includes(normQuery)) return true;
+  
+  const compactQuery = normQuery.replace(/\s+/g, '');
+  const compactText = normText.replace(/\s+/g, '');
+  if (compactQuery.length >= 2 && compactText.includes(compactQuery)) return true;
+  
+  const qWords = normQuery.split(' ').filter(Boolean);
+  return qWords.every(w => {
+    const regex = new RegExp(`(^|\\s)${w}(\\s|$)`, 'i');
+    return regex.test(normText);
+  });
+}
+
 const cache = new Map();
 
 async function searchYouTube(query) {
@@ -230,16 +256,37 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const saavnTracks = await searchSaavn(q);
-    if (saavnTracks && saavnTracks.length > 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ tracks: saavnTracks }));
-      return;
+    const [saavnRaw, ytRaw] = await Promise.all([
+      searchSaavn(q),
+      searchYouTube(q)
+    ]);
+
+    // Keep genuinely relevant JioSaavn tracks (for 320kbps direct stream)
+    const relevantSaavn = saavnRaw.filter(t => isRelevant(t.title, t.artist, q));
+
+    // Combine and deduplicate
+    const combined = [];
+    const seen = new Set();
+
+    for (const t of relevantSaavn) {
+      const key = `${normalize(t.title)}__${normalize(t.artist)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        combined.push(t);
+      }
     }
 
-    const tracks = await searchYouTube(q);
+    for (const t of ytRaw) {
+      const key = normalize(t.title);
+      if (!seen.has(key)) {
+        seen.add(key);
+        combined.push(t);
+      }
+    }
+
+    const finalTracks = combined.length > 0 ? combined : ytRaw;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ tracks }));
+    res.end(JSON.stringify({ tracks: finalTracks }));
     return;
   }
 
