@@ -669,6 +669,31 @@ class KawaiiSpotify {
           this.ytPlayer.cueVideoById(track.youtubeId);
         }
       }
+
+      // Opportunistically resolve direct 320kbps audio for uninterrupted iOS background play
+      fetch(`/api/resolve?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.success && data.src) {
+            const current = this.getCurrentTrack();
+            if (current && current.id === track.id) {
+              track.src = data.src;
+              track.type = 'audio';
+              if (data.cover) track.cover = data.cover;
+              const currentTime = this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
+              if (this.ytPlayer && this.isYtReady) {
+                this.ytPlayer.pauseVideo();
+              }
+              this.htmlAudio.loop = false;
+              this.htmlAudio.src = data.src;
+              this.htmlAudio.currentTime = currentTime;
+              if (this.isPlaying) {
+                this.htmlAudio.play().catch(() => {});
+              }
+            }
+          }
+        })
+        .catch(() => {});
     } else {
       // Local audio file
       if (this.ytPlayer && this.isYtReady) {
