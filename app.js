@@ -2,8 +2,34 @@
 // Inspired by Pastel Coquette / Aesthetic Widgets & Retro Cards
 // Ad-Free, Dual Engine (YouTube Streaming + HTML5 Audio), Universal Music Search
 
-// Inaudible silent audio loop used to maintain mobile OS background audio sessions
-const SILENT_AUDIO_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+// Inaudible silent audio loop used to maintain mobile OS background audio sessions.
+// NOTE: we generate a real WAV with non-zero samples at runtime instead of a tiny
+// all-zero data: URI — WebKit only treats the page as an active audio player while
+// it sees a genuine audio session, which is what keeps background JS alive on iOS.
+function createInaudibleLoopAudioUrl() {
+  const sampleRate = 8000;
+  const seconds = 4;
+  const numSamples = sampleRate * seconds;
+  const dataSize = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const writeStr = (o, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + dataSize, true); writeStr(8, 'WAVE');
+  writeStr(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  writeStr(36, 'data'); view.setUint32(40, dataSize, true);
+  for (let i = 0; i < numSamples; i++) {
+    // 16 Hz is below any phone speaker's range and amplitude 0.002 is inaudible,
+    // but the samples are not zero so WebKit counts it as real audio.
+    const v = Math.sin((2 * Math.PI * 16 * i) / sampleRate) * 0.002;
+    view.setInt16(44 + i * 2, Math.round(v * 32767), true);
+  }
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+}
 
 class KawaiiSpotify {
   constructor() {
@@ -46,6 +72,11 @@ class KawaiiSpotify {
 
     // Ticker for scrubber
     this.playbackInterval = null;
+
+    // iOS background audio session state
+    this.silentAudioUrl = createInaudibleLoopAudioUrl();
+    this.bgWatchdogTimer = null;
+    this.deliberatelyPaused = false;
 
     this.initDOM();
     this.initThemes();
@@ -217,6 +248,12 @@ class KawaiiSpotify {
                 this.isPlaying = false;
                 this.updatePlayStateUI();
                 this.stopTicker();
+              } else if (this.isPlaying) {
+                // YouTube pauses its own iframe when the host page loses focus.
+                // Keep the audio session alive and re-assert playback shortly
+                // afterwards so music continues while backgrounded.
+                this.ensureSilentSession(false);
+                this.scheduleBackgroundKick();
               }
             }
           }
@@ -424,6 +461,9 @@ class KawaiiSpotify {
     // HTML5 Audio events for native streams & local files
     this.htmlAudio.addEventListener('ended', () => this.onTrackEnded());
     this.htmlAudio.addEventListener('play', () => {
+      if (navigator.audioSession) {
+        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+      }
       this.isPlaying = true;
       this.updatePlayStateUI();
     });
@@ -469,6 +509,12 @@ class KawaiiSpotify {
 
     // Mobile visibility management: auto-resume when returning to the foreground tab
     document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.isPlaying) {
+        // As we leave the foreground: hold the audio session (webkit suspends the
+        // page otherwise) and nudge YouTube back to playing shortly after.
+        this.ensureSilentSession(false);
+        this.scheduleBackgroundKick();
+      }
       if (!document.hidden && this.isPlaying) {
         const cur = this.getCurrentTrack();
         if (cur && cur.type === 'youtube' && this.ytPlayer && this.isYtReady && typeof this.ytPlayer.playVideo === 'function') {
@@ -702,15 +748,9 @@ class KawaiiSpotify {
 
     // Audio stream dispatch
     if (track.type === 'youtube') {
-      if (this.htmlAudio) {
-        if (this.htmlAudio.src !== SILENT_AUDIO_WAV) {
-          this.htmlAudio.src = SILENT_AUDIO_WAV;
-          this.htmlAudio.loop = true;
-        }
-        if (autoPlay) {
-          this.htmlAudio.play().catch(() => {});
-        }
-      }
+      // Maintain the iOS audio session via the inaudible loop so background JS stays alive
+      this.deliberatelyPaused = false;
+      this.ensureSilentSession(autoPlay);
       if (this.ytPlayer && this.isYtReady) {
         if (autoPlay) {
           this.ytPlayer.loadVideoById(track.youtubeId);
@@ -748,15 +788,10 @@ class KawaiiSpotify {
     }
     const cur = this.getCurrentTrack();
     if (!cur) return;
+    this.deliberatelyPaused = false;
     if (cur.type === 'youtube' && this.ytPlayer && this.isYtReady) {
       this.ytPlayer.playVideo();
-      if (this.htmlAudio) {
-        if (this.htmlAudio.src !== SILENT_AUDIO_WAV) {
-          this.htmlAudio.src = SILENT_AUDIO_WAV;
-          this.htmlAudio.loop = true;
-        }
-        this.htmlAudio.play().catch(() => {});
-      }
+      this.ensureSilentSession(true);
     } else {
       this.htmlAudio.play().catch(() => {});
     }
@@ -765,12 +800,13 @@ class KawaiiSpotify {
   }
 
   pause() {
+    this.deliberatelyPaused = true;
     const cur = this.getCurrentTrack();
     if (cur && cur.type === 'youtube' && this.ytPlayer && this.isYtReady) {
+      // Do NOT pause the inaudible loop here: keeping the audio session alive
+      // lets iOS keep this page's JS running in the background so lock-screen
+      // MediaSession buttons (play/next/prev) actually reach the player.
       this.ytPlayer.pauseVideo();
-      if (this.htmlAudio && this.htmlAudio.src === SILENT_AUDIO_WAV) {
-        this.htmlAudio.pause();
-      }
     } else {
       this.htmlAudio.pause();
     }
@@ -781,6 +817,64 @@ class KawaiiSpotify {
   togglePlay() {
     if (this.isPlaying) this.pause();
     else this.play();
+  }
+
+  // ============ iOS background playback helpers ============
+
+  ensureSilentSession(startIfNeeded = true) {
+    const a = this.htmlAudio;
+    if (!a || !this.silentAudioUrl) return;
+    if (a.src !== this.silentAudioUrl) {
+      a.src = this.silentAudioUrl;
+      a.loop = true;
+    }
+    if (startIfNeeded && a.paused) {
+      a.play().catch(() => {});
+    }
+  }
+
+  scheduleBackgroundKick() {
+    // One-shot nudges shortly after we leave the foreground
+    setTimeout(() => this.kickPlayback(), 300);
+    setTimeout(() => this.kickPlayback(), 1200);
+  }
+
+  kickPlayback() {
+    if (!this.isPlaying || this.deliberatelyPaused || !document.hidden) return;
+    const cur = this.getCurrentTrack();
+    if (!cur) return;
+    if (navigator.audioSession) {
+      try { navigator.audioSession.type = 'playback'; } catch (_) {}
+    }
+    if (cur.type === 'youtube') {
+      this.ensureSilentSession(true);
+      try {
+        const p = this.ytPlayer;
+        const state = (p && this.isYtReady && typeof p.getPlayerState === 'function')
+          ? p.getPlayerState() : null;
+        // YT.PlayerState: -1 unstarted, 1 playing, 2 paused, 5 cued.
+        // Re-assert playback whenever the iframe is not actively playing.
+        if (p && this.isYtReady && (state === null || state === 1 || state === 2 || state === 5)) {
+          p.playVideo();
+        }
+      } catch (_) {}
+    } else if (this.htmlAudio && this.htmlAudio.paused) {
+      this.htmlAudio.play().catch(() => {});
+    }
+  }
+
+  startBackgroundWatchdog() {
+    if (this.bgWatchdogTimer) return;
+    this.bgWatchdogTimer = setInterval(() => {
+      if (this.isPlaying && document.hidden) this.kickPlayback();
+    }, 1000);
+  }
+
+  stopBackgroundWatchdog() {
+    if (this.bgWatchdogTimer) {
+      clearInterval(this.bgWatchdogTimer);
+      this.bgWatchdogTimer = null;
+    }
   }
 
   playCurrentTab() {
@@ -814,6 +908,9 @@ class KawaiiSpotify {
 
   updatePlayStateUI() {
     document.body.classList.toggle('is-playing', this.isPlaying);
+    // Run the background watchdog only while we should be audibly playing
+    if (this.isPlaying) this.startBackgroundWatchdog();
+    else this.stopBackgroundWatchdog();
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
     }
