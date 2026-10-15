@@ -145,31 +145,6 @@ function isRelevant(title, artist, query) {
   });
 }
 
-async function resolveDirectAudio(title, artist) {
-  try {
-    const cleanTitle = (title || '')
-      .replace(/(\(.*?\)|\[.*?\])/g, '')
-      .replace(/ft\..*|feat\..*/i, '')
-      .replace(/official.*|lyrics.*|audio.*|music video|video/gi, '')
-      .trim();
-    const query = `${cleanTitle} ${artist || ''}`.trim();
-    const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=1&n=3&q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
-    const data = await res.json();
-    const match = (data.results || [])[0];
-    if (match && match.encrypted_media_url) {
-      const direct = decryptMediaUrl(match.encrypted_media_url);
-      if (direct) {
-        return {
-          src: direct.replace(/_96\.mp4|_160\.mp4/, '_320.mp4'),
-          cover: (match.image || '').replace(/150x150\.jpg|50x50\.jpg/, '500x500.jpg')
-        };
-      }
-    }
-  } catch (_) {}
-  return null;
-}
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -213,17 +188,7 @@ export default async function handler(req, res) {
   // Keep genuinely relevant JioSaavn tracks (for 320kbps direct stream)
   const relevantSaavn = saavnRaw.filter(t => isRelevant(t.title, t.artist, q));
 
-  // Auto-upgrade YouTube tracks to direct 320kbps CDN audio for iOS background playback
-  await Promise.all(ytRaw.slice(0, 10).map(async (yt) => {
-    const direct = await resolveDirectAudio(yt.title, yt.artist);
-    if (direct && direct.src) {
-      yt.src = direct.src;
-      yt.type = 'audio';
-      if (direct.cover) yt.cover = direct.cover;
-    }
-  }));
-
-  // Combine and deduplicate
+  // Combine and deduplicate without altering track audio sources
   const combined = [];
   const seen = new Set();
 
