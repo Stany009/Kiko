@@ -77,6 +77,7 @@ class KawaiiSpotify {
     this.silentAudioUrl = createInaudibleLoopAudioUrl();
     this.bgWatchdogTimer = null;
     this.deliberatelyPaused = false;
+    this.bgLogPending = false;
 
     this.initDOM();
     this.initThemes();
@@ -88,6 +89,7 @@ class KawaiiSpotify {
     this.updateLikedBadge();
     this.updatePlaylistsCountBadge();
     this.initSupabase();
+    this.initBackgroundDiag();
   }
 
   initDOM() {
@@ -252,6 +254,7 @@ class KawaiiSpotify {
                 // YouTube pauses its own iframe when the host page loses focus.
                 // Keep the audio session alive and re-assert playback shortly
                 // afterwards so music continues while backgrounded.
+                this.bgLog('YT iframe paused itself while hidden → scheduling kicks');
                 this.ensureSilentSession(false);
                 this.scheduleBackgroundKick();
               }
@@ -848,6 +851,7 @@ class KawaiiSpotify {
     if (!this.isPlaying || this.deliberatelyPaused || !document.hidden) return;
     const cur = this.getCurrentTrack();
     if (!cur) return;
+    this.bgLog(`🥁 KICK attempt type=${cur.type} audioPaused=${this.htmlAudio ? this.htmlAudio.paused : '-'}`);
     if (navigator.audioSession) {
       try { navigator.audioSession.type = 'playback'; } catch (_) {}
     }
@@ -880,6 +884,131 @@ class KawaiiSpotify {
       clearInterval(this.bgWatchdogTimer);
       this.bgWatchdogTimer = null;
     }
+  }
+
+  // ============ iOS background diagnostics (temporary debug tooling) ============
+  // Records exactly what iOS/Webkit does to the page while it is hidden, so that
+  // background-audio failures can be diagnosed from the device itself.
+
+  bgLog(msg) {
+    try {
+      const log = JSON.parse(localStorage.getItem('kiko_bg_log') || '[]');
+      log.push(`${new Date().toLocaleTimeString()} ${msg}`);
+      if (log.length > 60) log.splice(0, log.length - 60);
+      localStorage.setItem('kiko_bg_log', JSON.stringify(log));
+      this.bgLogPending = true;
+    } catch (_) {}
+  }
+
+  initBackgroundDiag() {
+    // Detect a full page reload performed by iOS while the page was hidden
+    // (iOS kills the tab process and reloads it on return — audio cannot survive that)
+    const epoch = Number(sessionStorage.getItem('kiko_page_epoch') || 0);
+    sessionStorage.setItem('kiko_page_epoch', String(epoch + 1));
+    if (epoch > 0 && sessionStorage.getItem('kiko_hidden_playing') === '1') {
+      this.bgLog('⛔ PAGE RELOADED by iOS while hidden (tab was killed). Music cannot auto-recover — iOS forced a fresh load.');
+      sessionStorage.setItem('kiko_hidden_playing', '0');
+    }
+
+    window.addEventListener('pageshow', (e) => {
+      if (e.persisted) this.bgLog('🔁 Restored from bfcache: iOS froze the entire page in background, media died with it.');
+    });
+
+    const a = this.htmlAudio;
+    if (a) {
+      a.addEventListener('error', () => {
+        this.bgLog(`❌ audio error while ${document.hidden ? 'HIDDEN' : 'visible'}: code=${a.error ? a.error.code : '?'} ${a.error ? a.error.message : ''}`);
+      });
+      ['stalled', 'waiting', 'abort', 'emptied', 'suspend'].forEach((evt) => {
+        a.addEventListener(evt, () => {
+          if (document.hidden) this.bgLog(`⚠ audio '${evt}' while hidden (paused=${a.paused})`);
+        });
+      });
+      a.addEventListener('pause', () => {
+        if (document.hidden && this.isPlaying) {
+          this.bgLog(`⏸ iOS fired PAUSE while hidden (playing flag still true, type=${this.getCurrentTrack()?.type || '-'})`);
+        }
+      });
+      a.addEventListener('play', () => {
+        if (document.hidden) this.bgLog(`▶ audio PLAYED (resumed) while hidden`);
+      });
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      const cur = this.getCurrentTrack();
+      if (document.hidden) {
+        sessionStorage.setItem('kiko_hidden_playing', this.isPlaying ? '1' : '0');
+        this.bgLog(`👁 HIDDEN playing=${this.isPlaying} type=${cur ? cur.type : '-'} audioPaused=${a ? a.paused : '-'} silentSrc=${a ? (a.src === this.silentAudioUrl) : '-'} audioSession=${navigator.audioSession ? navigator.audioSession.type : 'n/a'}`);
+      } else {
+        this.bgLog('👀 VISIBLE');
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && this.bgLogPending) {
+        this.showBgLogPanel();
+      }
+    });
+
+    this.buildBgLogUI();
+  }
+
+  buildBgLogUI() {
+    if (document.getElementById('bg-log-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'bg-log-btn';
+    btn.textContent = '🧪';
+    btn.title = 'iOS background debug log';
+    btn.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:99998;width:40px;height:40px;border-radius:50%;border:2px solid #F58FA8;background:rgba(255,250,252,.95);font-size:18px;box-shadow:0 4px 14px rgba(216,112,147,.35);cursor:pointer;';
+    btn.addEventListener('click', () => this.showBgLogPanel());
+    document.body.appendChild(btn);
+  }
+
+  showBgLogPanel() {
+    let panel = document.getElementById('bg-log-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'bg-log-panel';
+      panel.style.cssText = 'position:fixed;left:8px;right:8px;bottom:58px;z-index:99999;background:rgba(255,250,252,.98);border:2px solid #F58FA8;border-radius:16px;padding:10px 12px;box-shadow:0 8px 24px rgba(216,112,147,.35);max-height:55vh;overflow:auto;';
+
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-family:sans-serif;';
+      const title = document.createElement('strong');
+      title.textContent = 'iOS Background Log';
+      const btns = document.createElement('div');
+      const clearBtn = document.createElement('button');
+      clearBtn.textContent = '🗑';
+      clearBtn.style.cssText = 'margin-right:6px;border:none;background:none;cursor:pointer;font-size:15px;';
+      clearBtn.addEventListener('click', () => {
+        try { localStorage.removeItem('kiko_bg_log'); } catch (_) {}
+        this.bgLogPending = false;
+        this.showBgLogPanel();
+      });
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.style.cssText = 'border:none;background:none;cursor:pointer;font-size:15px;';
+      closeBtn.addEventListener('click', () => { panel.style.display = 'none'; });
+      btns.appendChild(clearBtn);
+      btns.appendChild(closeBtn);
+      head.appendChild(title);
+      head.appendChild(btns);
+
+      const lines = document.createElement('div');
+      lines.id = 'bg-log-lines';
+      lines.style.cssText = 'font:11px/1.5 monospace;color:#43322B;white-space:pre-wrap;word-break:break-word;';
+      panel.appendChild(head);
+      panel.appendChild(lines);
+      document.body.appendChild(panel);
+    }
+
+    panel.style.display = 'block';
+    const linesEl = panel.querySelector('#bg-log-lines');
+    let log = [];
+    try { log = JSON.parse(localStorage.getItem('kiko_bg_log') || '[]'); } catch (_) {}
+    linesEl.textContent = log.length
+      ? log.join('\n')
+      : '(no events logged yet — start music, switch app or lock, then reopen)';
+    this.bgLogPending = false;
   }
 
   playCurrentTab() {
