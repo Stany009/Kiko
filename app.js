@@ -824,6 +824,11 @@ class KawaiiSpotify {
   ensureSilentSession(startIfNeeded = true) {
     const a = this.htmlAudio;
     if (!a || !this.silentAudioUrl) return;
+    // SAFETY GUARD: only swap the shared audio element to the inaudible loop for
+    // YouTube tracks. For real audio tracks the element IS the media itself —
+    // replacing its src (e.g. on visibilitychange) kills playback instantly.
+    const cur = this.getCurrentTrack();
+    if (!cur || cur.type !== 'youtube') return;
     if (a.src !== this.silentAudioUrl) {
       a.src = this.silentAudioUrl;
       a.loop = true;
